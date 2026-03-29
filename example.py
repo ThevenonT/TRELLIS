@@ -1,17 +1,20 @@
 import os
-# os.environ['ATTN_BACKEND'] = 'xformers'   # Can be 'flash-attn' or 'xformers', default is 'flash-attn'
-os.environ['SPCONV_ALGO'] = 'native'        # Can be 'native' or 'auto', default is 'auto'.
-                                            # 'auto' is faster but will do benchmarking at the beginning.
-                                            # Recommended to set to 'native' if run only once.
+# os.environ['ATTN_BACKEND'] = 'sdpa'       # Safer default for wider GPU compatibility.
+os.environ.setdefault('SPCONV_ALGO', 'native')
+os.environ.setdefault('TRELLIS_DEVICE', 'cpu')
 
 import imageio
+import torch
 from PIL import Image
 from trellis.pipelines import TrellisImageTo3DPipeline
 from trellis.utils import render_utils, postprocessing_utils
 
 # Load a pipeline from a model folder or a Hugging Face model hub.
 pipeline = TrellisImageTo3DPipeline.from_pretrained("microsoft/TRELLIS-image-large")
-pipeline.cuda()
+if os.environ.get("TRELLIS_DEVICE", "cpu").lower() == "cuda" and torch.cuda.is_available():
+    pipeline.cuda()
+else:
+    pipeline.cpu()
 
 # Load an image
 image = Image.open("assets/example_image/T.png")

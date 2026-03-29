@@ -1,18 +1,21 @@
 import os
-# os.environ['ATTN_BACKEND'] = 'xformers'   # Can be 'flash-attn' or 'xformers', default is 'flash-attn'
-os.environ['SPCONV_ALGO'] = 'native'        # Can be 'native' or 'auto', default is 'auto'.
-                                            # 'auto' is faster but will do benchmarking at the beginning.
-                                            # Recommended to set to 'native' if run only once.
+# os.environ['ATTN_BACKEND'] = 'sdpa'       # Safer default for wider GPU compatibility.
+os.environ.setdefault('SPCONV_ALGO', 'native')
+os.environ.setdefault('TRELLIS_DEVICE', 'cpu')
 
 import imageio
 import numpy as np
 import open3d as o3d
+import torch
 from trellis.pipelines import TrellisTextTo3DPipeline
 from trellis.utils import render_utils, postprocessing_utils
 
 # Load a pipeline from a model folder or a Hugging Face model hub.
 pipeline = TrellisTextTo3DPipeline.from_pretrained("microsoft/TRELLIS-text-xlarge")
-pipeline.cuda()
+if os.environ.get("TRELLIS_DEVICE", "cpu").lower() == "cuda" and torch.cuda.is_available():
+    pipeline.cuda()
+else:
+    pipeline.cpu()
 
 # Load mesh to make variants
 base_mesh = o3d.io.read_triangle_mesh("assets/T.ply")
@@ -38,4 +41,3 @@ video_gs = render_utils.render_video(outputs['gaussian'][0])['color']
 video_mesh = render_utils.render_video(outputs['mesh'][0])['normal']
 video = [np.concatenate([frame_gs, frame_mesh], axis=1) for frame_gs, frame_mesh in zip(video_gs, video_mesh)]
 imageio.mimsave("sample_variant.mp4", video, fps=30)
-

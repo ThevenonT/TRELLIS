@@ -261,6 +261,18 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
 
 # Launch the Gradio app
 if __name__ == "__main__":
+    os.environ.setdefault("TRELLIS_DEVICE", "cpu")
+    os.environ.setdefault("TRELLIS_MESH_DEVICE", os.environ["TRELLIS_DEVICE"])
+    os.environ.setdefault("SPCONV_ALGO", "native")
+    os.environ.setdefault("ATTN_BACKEND", "sdpa")
     pipeline = TrellisTextTo3DPipeline.from_pretrained("microsoft/TRELLIS-text-xlarge")
-    pipeline.cuda()
-    demo.launch()
+    preferred_device = os.environ.get("TRELLIS_DEVICE", "cpu").lower()
+    if preferred_device == "cuda":
+        try:
+            pipeline.cuda()
+        except torch.OutOfMemoryError:
+            print("[WARN] CUDA OOM while loading text pipeline. Falling back to CPU.")
+            pipeline.cpu()
+    else:
+        pipeline.cpu()
+    demo.launch(server_name="0.0.0.0", share=True)
