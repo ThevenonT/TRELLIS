@@ -1,5 +1,6 @@
 import gradio as gr
 from gradio_litmodel3d import LitModel3D
+import gradio_client.utils as gr_client_utils
 
 import os
 import shutil
@@ -17,6 +18,35 @@ from trellis.utils import render_utils, postprocessing_utils
 MAX_SEED = np.iinfo(np.int32).max
 TMP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmp')
 os.makedirs(TMP_DIR, exist_ok=True)
+SAFE_MODE = os.environ.get("TRELLIS_SAFE_MODE", "1").lower() not in ("0", "false", "no")
+MAX_INPUT_SIDE = int(os.environ.get("TRELLIS_MAX_IMAGE_SIZE", "384" if SAFE_MODE else "512"))
+DEFAULT_SS_GUIDANCE = 5.5 if SAFE_MODE else 7.5
+DEFAULT_SS_STEPS = 8 if SAFE_MODE else 12
+DEFAULT_SLAT_GUIDANCE = 2.5 if SAFE_MODE else 3.0
+DEFAULT_SLAT_STEPS = 6 if SAFE_MODE else 12
+DEFAULT_TEXTURE_SIZE = 512 if SAFE_MODE else 1024
+
+
+def _runtime_torch_device() -> torch.device:
+    if 'pipeline' in globals():
+        try:
+            return pipeline.device
+        except Exception:
+            pass
+    preferred = os.environ.get("TRELLIS_DEVICE", "cpu").lower()
+    if preferred == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def _resize_for_stability(image: Image.Image) -> Image.Image:
+    w, h = image.size
+    max_side = max(w, h)
+    if max_side <= MAX_INPUT_SIDE:
+        return image
+    scale = MAX_INPUT_SIDE / float(max_side)
+    new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+    return image.resize(new_size, Image.Resampling.LANCZOS)
 
 
 def start_session(req: gr.Request):
@@ -39,6 +69,7 @@ def preprocess_image(image: Image.Image) -> Image.Image:
     Returns:
         Image.Image: The preprocessed image.
     """
+    image = _resize_for_stability(image)
     processed_image = pipeline.preprocess_image(image)
     return processed_image
 
@@ -54,7 +85,7 @@ def preprocess_images(images: List[Tuple[Image.Image, str]]) -> List[Image.Image
         List[Image.Image]: The preprocessed images.
     """
     images = [image[0] for image in images]
-    processed_images = [pipeline.preprocess_image(image) for image in images]
+    processed_images = [preprocess_image(image) for image in images]
     return processed_images
 
 
@@ -76,6 +107,7 @@ def pack_state(gs: Gaussian, mesh: MeshExtractResult) -> dict:
     
     
 def unpack_state(state: dict) -> Tuple[Gaussian, edict, str]:
+    device = _runtime_torch_device()
     gs = Gaussian(
         aabb=state['gaussian']['aabb'],
         sh_degree=state['gaussian']['sh_degree'],
@@ -84,15 +116,15 @@ def unpack_state(state: dict) -> Tuple[Gaussian, edict, str]:
         opacity_bias=state['gaussian']['opacity_bias'],
         scaling_activation=state['gaussian']['scaling_activation'],
     )
-    gs._xyz = torch.tensor(state['gaussian']['_xyz'], device='cuda')
-    gs._features_dc = torch.tensor(state['gaussian']['_features_dc'], device='cuda')
-    gs._scaling = torch.tensor(state['gaussian']['_scaling'], device='cuda')
-    gs._rotation = torch.tensor(state['gaussian']['_rotation'], device='cuda')
-    gs._opacity = torch.tensor(state['gaussian']['_opacity'], device='cuda')
+    gs._xyz = torch.tensor(state['gaussian']['_xyz'], device=device)
+    gs._features_dc = torch.tensor(state['gaussian']['_features_dc'], device=device)
+    gs._scaling = torch.tensor(state['gaussian']['_scaling'], device=device)
+    gs._rotation = torch.tensor(state['gaussian']['_rotation'], device=device)
+    gs._opacity = torch.tensor(state['gaussian']['_opacity'], device=device)
     
     mesh = edict(
-        vertices=torch.tensor(state['mesh']['vertices'], device='cuda'),
-        faces=torch.tensor(state['mesh']['faces'], device='cuda'),
+        vertices=torch.tensor(state['mesh']['vertices'], device=device),
+        faces=torch.tensor(state['mesh']['faces'], device=device),
     )
     
     return gs, mesh
@@ -173,7 +205,8 @@ def image_to_3d(
     video_path = os.path.join(user_dir, 'sample.mp4')
     imageio.mimsave(video_path, video, fps=15)
     state = pack_state(outputs['gaussian'][0], outputs['mesh'][0])
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return state, video_path
 
 
@@ -199,7 +232,8 @@ def extract_glb(
     glb = postprocessing_utils.to_glb(gs, mesh, simplify=mesh_simplify, texture_size=texture_size, verbose=False)
     glb_path = os.path.join(user_dir, 'sample.glb')
     glb.export(glb_path)
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return glb_path, glb_path
 
 
@@ -217,7 +251,8 @@ def extract_gaussian(state: dict, req: gr.Request) -> Tuple[str, str]:
     gs, _ = unpack_state(state)
     gaussian_path = os.path.join(user_dir, 'sample.ply')
     gs.save_ply(gaussian_path)
-    torch.cuda.empty_cache()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return gaussian_path, gaussian_path
 
 
@@ -229,7 +264,8 @@ def prepare_multi_example() -> List[Image.Image]:
         for i in range(1, 4):
             img = Image.open(f'assets/example_multi_image/{case}_{i}.png')
             W, H = img.size
-            img = img.resize((int(W / H * 512), 512))
+            target_h = min(512, MAX_INPUT_SIDE)
+            img = img.resize((int(W / H * target_h), target_h))
             _images.append(np.array(img))
         images.append(Image.fromarray(np.concatenate(_images, axis=1)))
     return images
@@ -275,19 +311,19 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
                 randomize_seed = gr.Checkbox(label="Randomize Seed", value=True)
                 gr.Markdown("Stage 1: Sparse Structure Generation")
                 with gr.Row():
-                    ss_guidance_strength = gr.Slider(0.0, 10.0, label="Guidance Strength", value=7.5, step=0.1)
-                    ss_sampling_steps = gr.Slider(1, 50, label="Sampling Steps", value=12, step=1)
+                    ss_guidance_strength = gr.Slider(0.0, 10.0, label="Guidance Strength", value=DEFAULT_SS_GUIDANCE, step=0.1)
+                    ss_sampling_steps = gr.Slider(1, 50, label="Sampling Steps", value=DEFAULT_SS_STEPS, step=1)
                 gr.Markdown("Stage 2: Structured Latent Generation")
                 with gr.Row():
-                    slat_guidance_strength = gr.Slider(0.0, 10.0, label="Guidance Strength", value=3.0, step=0.1)
-                    slat_sampling_steps = gr.Slider(1, 50, label="Sampling Steps", value=12, step=1)
+                    slat_guidance_strength = gr.Slider(0.0, 10.0, label="Guidance Strength", value=DEFAULT_SLAT_GUIDANCE, step=0.1)
+                    slat_sampling_steps = gr.Slider(1, 50, label="Sampling Steps", value=DEFAULT_SLAT_STEPS, step=1)
                 multiimage_algo = gr.Radio(["stochastic", "multidiffusion"], label="Multi-image Algorithm", value="stochastic")
 
             generate_btn = gr.Button("Generate")
             
             with gr.Accordion(label="GLB Extraction Settings", open=False):
                 mesh_simplify = gr.Slider(0.9, 0.98, label="Simplify", value=0.95, step=0.01)
-                texture_size = gr.Slider(512, 2048, label="Texture Size", value=1024, step=512)
+                texture_size = gr.Slider(512, 2048, label="Texture Size", value=DEFAULT_TEXTURE_SIZE, step=512)
             
             with gr.Row():
                 extract_glb_btn = gr.Button("Extract GLB", interactive=False)
@@ -398,6 +434,36 @@ with gr.Blocks(delete_cache=(600, 600)) as demo:
 
 # Launch the Gradio app
 if __name__ == "__main__":
+    # Work around a Gradio schema parsing bug where `additionalProperties` may be boolean.
+    _orig_json_schema_to_python_type = gr_client_utils._json_schema_to_python_type
+
+    def _safe_json_schema_to_python_type(schema, defs=None):
+        if isinstance(schema, bool):
+            return "Any"
+        return _orig_json_schema_to_python_type(schema, defs)
+
+    gr_client_utils._json_schema_to_python_type = _safe_json_schema_to_python_type
+
+    # Default to CPU on startup to avoid OOM on low-VRAM GPUs.
+    os.environ.setdefault("TRELLIS_DEVICE", "cpu")
+    os.environ.setdefault("TRELLIS_MESH_DEVICE", os.environ["TRELLIS_DEVICE"])
+    # `auto` can pick unstable kernels on some GPUs (e.g. GTX 16xx); `native` is slower but safer.
+    os.environ.setdefault("SPCONV_ALGO", "native")
+    if SAFE_MODE:
+        os.environ.setdefault("ATTN_BACKEND", "sdpa")
+        print(
+            f"[SAFE MODE] ON | max_input={MAX_INPUT_SIDE} | ss_steps={DEFAULT_SS_STEPS} | "
+            f"slat_steps={DEFAULT_SLAT_STEPS} | attn={os.environ.get('ATTN_BACKEND')}"
+        )
+
     pipeline = TrellisImageTo3DPipeline.from_pretrained("microsoft/TRELLIS-image-large")
-    pipeline.cuda()
-    demo.launch()
+    preferred_device = os.environ.get("TRELLIS_DEVICE", "cpu").lower()
+    if preferred_device == "cuda":
+        try:
+            pipeline.cuda()
+        except torch.OutOfMemoryError:
+            print("[WARN] CUDA OOM while loading pipeline. Falling back to CPU.")
+            pipeline.cpu()
+    else:
+        pipeline.cpu()
+    demo.launch(server_name="0.0.0.0", share=True)

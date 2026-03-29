@@ -40,8 +40,31 @@ class Pipeline:
         for k, v in args['models'].items():
             try:
                 _models[k] = models.from_pretrained(f"{path}/{v}")
-            except:
-                _models[k] = models.from_pretrained(v)
+            except Exception as e:
+                # Only fall back to standalone repo ids when the nested path is actually missing.
+                # Runtime errors (e.g., CUDA OOM) should be surfaced directly.
+                if is_local:
+                    raise
+                try:
+                    from huggingface_hub.errors import (
+                        EntryNotFoundError,
+                        RepositoryNotFoundError,
+                        RevisionNotFoundError,
+                    )
+                    missing_ref_errors = (
+                        FileNotFoundError,
+                        NotADirectoryError,
+                        EntryNotFoundError,
+                        RepositoryNotFoundError,
+                        RevisionNotFoundError,
+                    )
+                except Exception:
+                    missing_ref_errors = (FileNotFoundError, NotADirectoryError)
+
+                if isinstance(e, missing_ref_errors):
+                    _models[k] = models.from_pretrained(v)
+                else:
+                    raise
 
         new_pipeline = Pipeline(_models)
         new_pipeline._pretrained_args = args

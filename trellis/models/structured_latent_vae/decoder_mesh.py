@@ -1,4 +1,5 @@
 from typing import *
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -103,7 +104,12 @@ class SLatMeshDecoder(SparseTransformerBase):
         )
         self.resolution = resolution
         self.rep_config = representation_config
-        self.mesh_extractor = SparseFeatures2Mesh(res=self.resolution*4, use_color=self.rep_config.get('use_color', False))
+        mesh_device = os.environ.get("TRELLIS_MESH_DEVICE", os.environ.get("TRELLIS_DEVICE", "cuda"))
+        self.mesh_extractor = SparseFeatures2Mesh(
+            device=mesh_device,
+            res=self.resolution * 4,
+            use_color=self.rep_config.get('use_color', False),
+        )
         self.out_channels = self.mesh_extractor.feats_channels
         self.upsample = nn.ModuleList([
             SparseSubdivideBlock3d(
