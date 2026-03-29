@@ -216,6 +216,16 @@ This fork includes a few runtime-focused changes to make the Gradio demo easier 
 - Added a Gradio schema workaround for environments where `additionalProperties` can be returned as a boolean.
 - The modified `flexicubes` dependency is now vendored directly into this fork instead of being kept as a Git submodule, so it can be edited and versioned from this repository.
 
+By default, this fork starts more conservatively than upstream:
+
+- `TRELLIS_SAFE_MODE=1`
+- `TRELLIS_DEVICE=cpu`
+- `TRELLIS_MESH_DEVICE=cpu`
+- `SPCONV_ALGO=native`
+- lower sampler steps and lower texture size to reduce VRAM usage
+
+### Runtime Controls
+
 The demo can be configured with the following environment variables:
 
 ```sh
@@ -227,15 +237,82 @@ ATTN_BACKEND=sdpa
 SPCONV_ALGO=native
 ```
 
-Example launch commands:
+What each variable does:
+
+- `TRELLIS_SAFE_MODE`
+  - `1`: safer defaults for low VRAM
+  - `0`: more aggressive defaults closer to upstream behavior
+- `TRELLIS_DEVICE`
+  - main pipeline device
+  - use `cpu` if CUDA is missing or unstable
+  - use `cuda` if your GPU is properly configured
+- `TRELLIS_MESH_DEVICE`
+  - device used by the mesh extraction path
+  - usually keep it the same as `TRELLIS_DEVICE`
+- `TRELLIS_MAX_IMAGE_SIZE`
+  - maximum input image side before automatic resize
+  - lower values reduce memory pressure
+- `ATTN_BACKEND`
+  - recommended safe default: `sdpa`
+  - other setups may use `xformers` or `flash-attn` if supported
+- `SPCONV_ALGO`
+  - `native`: slower but more stable
+  - `auto`: can be faster but may be less predictable on some setups
+
+Safe mode changes these defaults in the app:
+
+- sparse structure sampler steps: `8` instead of `12`
+- sparse structure guidance: `5.5` instead of `7.5`
+- SLAT sampler steps: `6` instead of `12`
+- SLAT guidance: `2.5` instead of `3.0`
+- texture size: `512` instead of `1024`
+- max input side: `384` instead of `512`
+
+### Launch Examples
+
+Use one of these depending on your machine:
 
 ```sh
-# Safer launch for limited VRAM or CPU-only testing
+# CPU-only or maximum safety
 TRELLIS_SAFE_MODE=1 TRELLIS_DEVICE=cpu python app.py
 
-# GPU launch when CUDA is available and configured
+# GPU launch with safer defaults
+TRELLIS_SAFE_MODE=1 TRELLIS_DEVICE=cuda TRELLIS_MESH_DEVICE=cuda ATTN_BACKEND=sdpa python app.py
+
+# GPU launch with more aggressive settings
 TRELLIS_SAFE_MODE=0 TRELLIS_DEVICE=cuda TRELLIS_MESH_DEVICE=cuda python app.py
+
+# Force a smaller input size on a limited GPU
+TRELLIS_SAFE_MODE=1 TRELLIS_DEVICE=cuda TRELLIS_MESH_DEVICE=cuda TRELLIS_MAX_IMAGE_SIZE=256 python app.py
+
+# Explicit stable spconv configuration
+TRELLIS_SAFE_MODE=1 TRELLIS_DEVICE=cuda TRELLIS_MESH_DEVICE=cuda SPCONV_ALGO=native python app.py
 ```
+
+### Which Mode To Use
+
+- Use `cpu` if:
+  - CUDA is not installed
+  - the model fails at startup on GPU
+  - you want the most stable debugging setup
+- Use `cuda` if:
+  - `torch.cuda.is_available()` is true
+  - your drivers and CUDA stack are working
+  - you want faster generation
+- Keep `TRELLIS_SAFE_MODE=1` if:
+  - you have limited VRAM
+  - you hit OOM errors
+  - the demo crashes with the upstream-style defaults
+- Try `TRELLIS_SAFE_MODE=0` only when:
+  - the safe configuration is already working
+  - you want higher-quality defaults and accept higher memory use
+
+### Practical Notes
+
+- If `TRELLIS_DEVICE=cuda` fails during pipeline load, the app now falls back to CPU instead of crashing immediately on some OOM cases.
+- Saved state reload is now CPU-compatible, so the app can reopen generated state even without a CUDA-only restore path.
+- Mesh extraction now respects `TRELLIS_MESH_DEVICE`, which helps when debugging device-specific problems.
+- The pipeline loader now re-raises real runtime errors instead of silently masking them as missing-model fallbacks.
 
 
 <!-- Dataset -->
