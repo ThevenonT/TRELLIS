@@ -198,6 +198,45 @@ python app.py
 
 Then, you can access the demo at the address shown in the terminal.
 
+### Local Modifications In This Fork
+
+This fork includes a few runtime-focused changes to make the Gradio demo easier to launch on lower-VRAM machines and more robust when CUDA is unavailable or unstable.
+
+- Safer default startup for the demo:
+  - `TRELLIS_DEVICE` now defaults to `cpu`.
+  - `TRELLIS_MESH_DEVICE` follows `TRELLIS_DEVICE` unless explicitly overridden.
+  - `SPCONV_ALGO` defaults to `native` for improved stability.
+- Reduced default generation settings in safe mode to lower VRAM pressure:
+  - smaller input image cap
+  - fewer sampler steps
+  - lower default texture size
+- CPU-compatible tensor restoration in the Gradio app when reloading saved state.
+- Mesh decoder device selection can now be controlled with environment variables.
+- The pipeline loader now avoids hiding runtime errors such as CUDA OOM behind a generic fallback load path.
+- Added a Gradio schema workaround for environments where `additionalProperties` can be returned as a boolean.
+- The modified `flexicubes` dependency is now vendored directly into this fork instead of being kept as a Git submodule, so it can be edited and versioned from this repository.
+
+The demo can be configured with the following environment variables:
+
+```sh
+TRELLIS_SAFE_MODE=1
+TRELLIS_DEVICE=cpu
+TRELLIS_MESH_DEVICE=cpu
+TRELLIS_MAX_IMAGE_SIZE=384
+ATTN_BACKEND=sdpa
+SPCONV_ALGO=native
+```
+
+Example launch commands:
+
+```sh
+# Safer launch for limited VRAM or CPU-only testing
+TRELLIS_SAFE_MODE=1 TRELLIS_DEVICE=cpu python app.py
+
+# GPU launch when CUDA is available and configured
+TRELLIS_SAFE_MODE=0 TRELLIS_DEVICE=cuda TRELLIS_MESH_DEVICE=cuda python app.py
+```
+
 
 <!-- Dataset -->
 ## 📚 Dataset
@@ -330,7 +369,7 @@ TRELLIS models and the majority of the code are licensed under the [MIT License]
 - [**diffoctreerast**](https://github.com/JeffreyXiang/diffoctreerast): We developed a CUDA-based real-time differentiable octree renderer for rendering radiance fields as part of this project. This renderer is derived from the [diff-gaussian-rasterization](https://github.com/graphdeco-inria/diff-gaussian-rasterization) project and is available under the [LICENSE](https://github.com/JeffreyXiang/diffoctreerast/blob/master/LICENSE).
 
 
-- [**Modified Flexicubes**](https://github.com/MaxtirError/FlexiCubes): In this project, we used a modified version of [Flexicubes](https://github.com/nv-tlabs/FlexiCubes) to support vertex attributes. This modified version is licensed under the [LICENSE](https://github.com/nv-tlabs/FlexiCubes/blob/main/LICENSE.txt).
+- [**Modified Flexicubes**](https://github.com/MaxtirError/FlexiCubes): This fork vendors a modified version of [Flexicubes](https://github.com/nv-tlabs/FlexiCubes) directly in `trellis/representations/mesh/flexicubes` to support vertex attributes. The vendored code remains subject to the original [LICENSE](https://github.com/nv-tlabs/FlexiCubes/blob/main/LICENSE.txt).
 
 
 <!-- Citation -->
@@ -346,4 +385,3 @@ If you find this work helpful, please consider citing our paper:
     year    = {2024}
 }
 ```
-
